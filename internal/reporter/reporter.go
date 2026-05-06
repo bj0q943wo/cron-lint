@@ -1,79 +1,77 @@
-// Package reporter formats and outputs analysis results for cron-lint.
+// Package reporter formats analysis results for human and machine consumers.
 package reporter
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 
-	"github.com/cron-lint/internal/analyzer"
+	"github.com/user/cron-lint/internal/analyzer"
 )
 
-// Format represents the output format for the reporter.
-type Format string
-
-const (
-	FormatText Format = "text"
-	FormatJSON Format = "json"
-)
-
-// OverlapReport holds a single overlap finding.
-type OverlapReport struct {
-	JobA    string
-	JobB    string
-	Message string
-}
-
-// Report holds the full analysis result.
+// Report holds the complete analysis output.
 type Report struct {
-	TotalJobs int
-	Overlaps  []OverlapReport
+	Jobs     []analyzer.Job              `json:"jobs"`
+	Overlaps []analyzer.OverlapResult    `json:"overlaps"`
+	Warnings []analyzer.ValidationWarning `json:"warnings,omitempty"`
 }
 
-// Build constructs a Report from detected overlaps.
-func Build(jobs []analyzer.Job, overlaps []analyzer.OverlapResult) Report {
-	reports := make([]OverlapReport, 0, len(overlaps))
-	for _, o := range overlaps {
-		reports = append(reports, OverlapReport{
-			JobA:    o.JobA,
-			JobB:    o.JobB,
-			Message: fmt.Sprintf("jobs %q and %q share %d overlapping minute(s) per hour", o.JobA, o.JobB, len(o.SharedMinutes)),
-		})
-	}
+// Build assembles a Report from the provided jobs, running overlap detection
+// and schedule validation.
+func Build(jobs []analyzer.Job) Report {
 	return Report{
-		TotalJobs: len(jobs),
-		Overlaps:  reports,
+		Jobs:     jobs,
+		Overlaps: analyzer.DetectOverlaps(jobs),
+		Warnings: analyzer.ValidateJobs(jobs),
 	}
 }
 
 // WriteText writes a human-readable report to w.
-func WriteText(w io.Writer, r Report) {
-	fmt.Fprintf(w, "cron-lint: analyzed %d job(s)\n", r.TotalJobs)
+func WriteText(w io.Writer, r Report) error {
+	fmt.Fprintf(w, "Jobs analysed: %d\n", len(r.Jobs))
+
 	if len(r.Overlaps) == 0 {
-		fmt.Fprintln(w, "No overlapping jobs detected.")
-		return
+		fmt.Fprintln(w, "No overlapping schedules detected.")
+	} else {
+		fmt.Fprintf(w, "Overlaps detected: %d\n", len(r.Overlaps))
+		for _, o := range r.Overlaps {
+			fmt.Fprintf(w, "  [OVERLAP] %q and %q share %d minute(s) — e.g. %s\n",
+				o.JobA.Name, o.JobB.Name, len(o.CommonMinutes),
+				formatSample(o.CommonMinutes))
+		}
 	}
-	fmt.Fprintf(w, "Found %d overlap(s):\n", len(r.Overlaps))
-	for i, o := range r.Overlaps {
-		fmt.Fprintf(w, "  [%d] %s\n", i+1, o.Message)
+
+	if len(r.Warnings) > 0 {
+		fmt.Fprintf(w, "Warnings: %d\n", len(r.Warnings))
+		for _, w2 := range r.Warnings {
+			fmt.Fprintf(w, "  [WARN] %q: %s\n", w2.Job.Name, w2.Message)
+		}
 	}
+
+	return nil
 }
 
-// WriteJSON writes a JSON-formatted report to w.
-func WriteJSON(w io.Writer, r Report) {
-	var sb strings.Builder
-	sb.WriteString("{\n")
-	sb.WriteString(fmt.Sprintf("  \"total_jobs\": %d,\n", r.TotalJobs))
-	sb.WriteString(fmt.Sprintf("  \"overlap_count\": %d,\n", len(r.Overlaps)))
-	sb.WriteString("  \"overlaps\": [\n")
-	for i, o := range r.Overlaps {
-		comma := ","
-		if i == len(r.Overlaps)-1 {
-			comma = ""
-		}
-		sb.WriteString(fmt.Sprintf("    {\"job_a\": %q, \"job_b\": %q, \"message\": %q}%s\n",
-			o.JobA, o.JobB, o.Message, comma))
+// WriteJSON writes a machine-readable JSON report to w.
+func WriteJSON(w io.Writer, r Report) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(r)
+}
+
+// formatSample returns a short preview of minute values.
+func formatSample(minutes []int) string {
+	const max = 3
+	if len(minutes) == 0 {
+		return "(none)"
 	}
-	sb.WriteString("  ]\n}\n")
-	fmt.Fprint(w, sb.String())
+	parts := make([]string, 0, max)
+	for i, m := range minutes {
+		if i >= max {
+			parts = append(parts, "...")
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%d", m))
+	}
+	return strings.Join(parts, ",")
 }
