@@ -1,4 +1,4 @@
-// Package reporter formats analysis results for human and machine consumers.
+// Package reporter formats analysis results for human and machine consumption.
 package reporter
 
 import (
@@ -12,66 +12,62 @@ import (
 
 // Report holds the complete analysis output.
 type Report struct {
-	Jobs     []analyzer.Job              `json:"jobs"`
-	Overlaps []analyzer.OverlapResult    `json:"overlaps"`
-	Warnings []analyzer.ValidationWarning `json:"warnings,omitempty"`
+	Overlaps   []analyzer.OverlapResult   `json:"overlaps"`
+	Warnings   []analyzer.Warning         `json:"warnings"`
+	Duplicates []analyzer.DuplicateGroup  `json:"duplicates"`
 }
 
-// Build assembles a Report from the provided jobs, running overlap detection
-// and schedule validation.
+// Build constructs a Report from the provided jobs.
 func Build(jobs []analyzer.Job) Report {
 	return Report{
-		Jobs:     jobs,
-		Overlaps: analyzer.DetectOverlaps(jobs),
-		Warnings: analyzer.ValidateJobs(jobs),
+		Overlaps:   analyzer.DetectOverlaps(jobs),
+		Warnings:   analyzer.ValidateJobs(jobs),
+		Duplicates: analyzer.DetectDuplicates(jobs),
 	}
 }
 
 // WriteText writes a human-readable report to w.
-func WriteText(w io.Writer, r Report) error {
-	fmt.Fprintf(w, "Jobs analysed: %d\n", len(r.Jobs))
+func WriteText(w io.Writer, r Report) {
+	if len(r.Overlaps) == 0 && len(r.Warnings) == 0 && len(r.Duplicates) == 0 {
+		fmt.Fprintln(w, "OK: no issues found.")
+		return
+	}
 
-	if len(r.Overlaps) == 0 {
-		fmt.Fprintln(w, "No overlapping schedules detected.")
-	} else {
-		fmt.Fprintf(w, "Overlaps detected: %d\n", len(r.Overlaps))
+	if len(r.Overlaps) > 0 {
+		fmt.Fprintf(w, "OVERLAPS (%d):\n", len(r.Overlaps))
 		for _, o := range r.Overlaps {
-			fmt.Fprintf(w, "  [OVERLAP] %q and %q share %d minute(s) — e.g. %s\n",
-				o.JobA.Name, o.JobB.Name, len(o.CommonMinutes),
-				formatSample(o.CommonMinutes))
+			fmt.Fprintf(w, "  [overlap] %q and %q share %d firing time(s), e.g. %s\n",
+				o.JobA, o.JobB, len(o.CommonMinutes), formatSample(o.CommonMinutes))
 		}
 	}
 
 	if len(r.Warnings) > 0 {
-		fmt.Fprintf(w, "Warnings: %d\n", len(r.Warnings))
+		fmt.Fprintf(w, "WARNINGS (%d):\n", len(r.Warnings))
 		for _, w2 := range r.Warnings {
-			fmt.Fprintf(w, "  [WARN] %q: %s\n", w2.Job.Name, w2.Message)
+			fmt.Fprintf(w, "  [warn] %s: %s\n", w2.JobName, w2.Message)
 		}
 	}
 
-	return nil
+	if len(r.Duplicates) > 0 {
+		fmt.Fprintf(w, "DUPLICATES (%d):\n", len(r.Duplicates))
+		for _, d := range r.Duplicates {
+			fmt.Fprintf(w, "  [duplicate] expression %q used by: %s\n",
+				d.Expression, strings.Join(d.JobNames, ", "))
+		}
+	}
 }
 
-// WriteJSON writes a machine-readable JSON report to w.
+// WriteJSON writes a JSON-encoded report to w.
 func WriteJSON(w io.Writer, r Report) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(r)
 }
 
-// formatSample returns a short preview of minute values.
+// formatSample returns a short string representation of the first minute value.
 func formatSample(minutes []int) string {
-	const max = 3
 	if len(minutes) == 0 {
 		return "(none)"
 	}
-	parts := make([]string, 0, max)
-	for i, m := range minutes {
-		if i >= max {
-			parts = append(parts, "...")
-			break
-		}
-		parts = append(parts, fmt.Sprintf("%d", m))
-	}
-	return strings.Join(parts, ",")
+	return fmt.Sprintf("minute %d", minutes[0])
 }

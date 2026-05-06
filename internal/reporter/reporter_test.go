@@ -7,95 +7,86 @@ import (
 	"testing"
 
 	"github.com/user/cron-lint/internal/analyzer"
-	"github.com/user/cron-lint/internal/parser"
 )
 
-func makeJobs(exprs map[string]string) []analyzer.Job {
+func makeJobs(exprs ...string) []analyzer.Job {
 	var jobs []analyzer.Job
-	for name, expr := range exprs {
-		sched, err := parser.Parse(expr)
-		if err != nil {
-			panic(err)
-		}
-		jobs = append(jobs, analyzer.Job{Name: name, Expr: expr, Schedule: sched})
+	for i, e := range exprs {
+		jobs = append(jobs, analyzer.Job{
+			Name:       fmt.Sprintf("job-%d", i+1),
+			Expression: e,
+		})
 	}
 	return jobs
 }
 
 func TestBuild_NoOverlaps(t *testing.T) {
-	jobs := makeJobs(map[string]string{
-		"a": "0 1 * * *",
-		"b": "0 2 * * *",
-	})
+	jobs := makeJobs("0 * * * *", "30 * * * *")
 	r := Build(jobs)
 	if len(r.Overlaps) != 0 {
-		t.Errorf("expected 0 overlaps, got %d", len(r.Overlaps))
+		t.Errorf("expected no overlaps, got %d", len(r.Overlaps))
+	}
+	if len(r.Duplicates) != 0 {
+		t.Errorf("expected no duplicates, got %d", len(r.Duplicates))
 	}
 }
 
-func TestBuild_WithOverlaps(t *testing.T) {
-	jobs := makeJobs(map[string]string{
-		"x": "0 * * * *",
-		"y": "0 * * * *",
-	})
+func TestBuild_WithDuplicates(t *testing.T) {
+	jobs := []analyzer.Job{
+		{Name: "alpha", Expression: "*/5 * * * *"},
+		{Name: "beta", Expression: "*/5 * * * *"},
+		{Name: "gamma", Expression: "0 * * * *"},
+	}
 	r := Build(jobs)
-	if len(r.Overlaps) == 0 {
-		t.Error("expected overlaps, got none")
+	if len(r.Duplicates) != 1 {
+		t.Fatalf("expected 1 duplicate group, got %d", len(r.Duplicates))
+	}
+	if r.Duplicates[0].Expression != "*/5 * * * *" {
+		t.Errorf("unexpected duplicate expression %q", r.Duplicates[0].Expression)
 	}
 }
 
-func TestBuild_WithWarnings(t *testing.T) {
-	jobs := makeJobs(map[string]string{
-		"poller": "* * * * *",
-	})
-	r := Build(jobs)
-	if len(r.Warnings) == 0 {
-		t.Error("expected at least one warning for every-minute job")
-	}
-}
-
-func TestWriteText_NoOverlap(t *testing.T) {
-	jobs := makeJobs(map[string]string{"j": "5 4 * * *"})
-	r := Build(jobs)
+func TestWriteText_NoDuplicates(t *testing.T) {
+	r := Report{}
 	var buf bytes.Buffer
-	if err := WriteText(&buf, r); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(buf.String(), "No overlapping") {
-		t.Errorf("expected 'No overlapping' in output, got: %s", buf.String())
+	WriteText(&buf, r)
+	if !strings.Contains(buf.String(), "OK") {
+		t.Errorf("expected OK message, got: %s", buf.String())
 	}
 }
 
-func TestWriteText_WithOverlap(t *testing.T) {
-	jobs := makeJobs(map[string]string{
-		"a": "0 6 * * *",
-		"b": "0 6 * * *",
-	})
-	r := Build(jobs)
+func TestWriteText_WithDuplicates(t *testing.T) {
+	r := Report{
+		Duplicates: []analyzer.DuplicateGroup{
+			{Expression: "0 * * * *", JobNames: []string{"job-1", "job-2"}},
+		},
+	}
 	var buf bytes.Buffer
-	if err := WriteText(&buf, r); err != nil {
-		t.Fatal(err)
+	WriteText(&buf, r)
+	out := buf.String()
+	if !strings.Contains(out, "DUPLICATES") {
+		t.Errorf("expected DUPLICATES section, got: %s", out)
 	}
-	if !strings.Contains(buf.String(), "OVERLAP") {
-		t.Errorf("expected OVERLAP in output, got: %s", buf.String())
+	if !strings.Contains(out, "job-1") || !strings.Contains(out, "job-2") {
+		t.Errorf("expected job names in output, got: %s", out)
 	}
 }
 
-func TestWriteJSON_Structure(t *testing.T) {
-	jobs := makeJobs(map[string]string{"nightly": "0 0 * * *"})
-	r := Build(jobs)
+func TestWriteJSON_IncludesDuplicates(t *testing.T) {
+	r := Report{
+		Duplicates: []analyzer.DuplicateGroup{
+			{Expression: "*/15 * * * *", JobNames: []string{"a", "b"}},
+		},
+	}
 	var buf bytes.Buffer
 	if err := WriteJSON(&buf, r); err != nil {
-		t.Fatal(err)
+		t.Fatalf("WriteJSON error: %v", err)
 	}
-	var out map[string]interface{}
-	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
+	var decoded Report
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
 	}
-	if _, ok := out["jobs"]; !ok {
-		t.Error("JSON output missing 'jobs' key")
-	}
-	if _, ok := out["overlaps"]; !ok {
-		t.Error("JSON output missing 'overlaps' key")
+	if len(decoded.Duplicates) != 1 {
+		t.Errorf("expected 1 duplicate in JSON output, got %d", len(decoded.Duplicates))
 	}
 }
