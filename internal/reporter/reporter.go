@@ -8,51 +8,67 @@ import (
 	"strings"
 
 	"github.com/user/cron-lint/internal/analyzer"
+	"github.com/user/cron-lint/internal/parser"
 )
 
-// Report holds the complete analysis output.
+// Report is the top-level result returned by Build.
 type Report struct {
-	Overlaps   []analyzer.OverlapResult   `json:"overlaps"`
-	Warnings   []analyzer.Warning         `json:"warnings"`
-	Duplicates []analyzer.DuplicateGroup  `json:"duplicates"`
+	Jobs        []parser.Job           `json:"jobs"`
+	Duplicates  []analyzer.DuplicateGroup `json:"duplicates"`
+	Overlaps    []analyzer.OverlapPair    `json:"overlaps"`
+	Warnings    []analyzer.Warning        `json:"warnings"`
+	Suggestions []analyzer.Suggestion     `json:"suggestions"`
 }
 
-// Build constructs a Report from the provided jobs.
-func Build(jobs []analyzer.Job) Report {
+// Build runs all analysers and assembles a Report.
+func Build(jobs []parser.Job) Report {
 	return Report{
-		Overlaps:   analyzer.DetectOverlaps(jobs),
-		Warnings:   analyzer.ValidateJobs(jobs),
-		Duplicates: analyzer.DetectDuplicates(jobs),
+		Jobs:        jobs,
+		Duplicates:  analyzer.DetectDuplicates(jobs),
+		Overlaps:    analyzer.DetectOverlaps(jobs),
+		Warnings:    analyzer.ValidateJobs(jobs),
+		Suggestions: analyzer.SuggestFixes(jobs),
 	}
 }
 
 // WriteText writes a human-readable report to w.
 func WriteText(w io.Writer, r Report) {
-	if len(r.Overlaps) == 0 && len(r.Warnings) == 0 && len(r.Duplicates) == 0 {
-		fmt.Fprintln(w, "OK: no issues found.")
+	fmt.Fprintf(w, "Jobs loaded: %d\n", len(r.Jobs))
+
+	if len(r.Duplicates) == 0 && len(r.Overlaps) == 0 && len(r.Warnings) == 0 && len(r.Suggestions) == 0 {
+		fmt.Fprintln(w, "No issues found.")
 		return
 	}
 
+	if len(r.Duplicates) > 0 {
+		fmt.Fprintf(w, "\nDuplicates (%d group(s)):\n", len(r.Duplicates))
+		for _, d := range r.Duplicates {
+			names := make([]string, len(d.Jobs))
+			for i, j := range d.Jobs {
+				names[i] = j.Name
+			}
+			fmt.Fprintf(w, "  [%s] share schedule %q\n", strings.Join(names, ", "), d.Schedule)
+		}
+	}
+
 	if len(r.Overlaps) > 0 {
-		fmt.Fprintf(w, "OVERLAPS (%d):\n", len(r.Overlaps))
+		fmt.Fprintf(w, "\nOverlaps (%d pair(s)):\n", len(r.Overlaps))
 		for _, o := range r.Overlaps {
-			fmt.Fprintf(w, "  [overlap] %q and %q share %d firing time(s), e.g. %s\n",
-				o.JobA, o.JobB, len(o.CommonMinutes), formatSample(o.CommonMinutes))
+			fmt.Fprintf(w, "  %q and %q overlap at %s\n", o.A.Name, o.B.Name, formatSample(o.SampleMinutes))
 		}
 	}
 
 	if len(r.Warnings) > 0 {
-		fmt.Fprintf(w, "WARNINGS (%d):\n", len(r.Warnings))
+		fmt.Fprintf(w, "\nWarnings (%d):\n", len(r.Warnings))
 		for _, w2 := range r.Warnings {
-			fmt.Fprintf(w, "  [warn] %s: %s\n", w2.JobName, w2.Message)
+			fmt.Fprintf(w, "  [%s] %s\n", w2.JobName, w2.Message)
 		}
 	}
 
-	if len(r.Duplicates) > 0 {
-		fmt.Fprintf(w, "DUPLICATES (%d):\n", len(r.Duplicates))
-		for _, d := range r.Duplicates {
-			fmt.Fprintf(w, "  [duplicate] expression %q used by: %s\n",
-				d.Expression, strings.Join(d.JobNames, ", "))
+	if len(r.Suggestions) > 0 {
+		fmt.Fprintf(w, "\nSuggestions (%d):\n", len(r.Suggestions))
+		for _, s := range r.Suggestions {
+			fmt.Fprintf(w, "  [%s] %s → try %q\n", s.JobName, s.Reason, s.Suggested)
 		}
 	}
 }
@@ -64,10 +80,13 @@ func WriteJSON(w io.Writer, r Report) error {
 	return enc.Encode(r)
 }
 
-// formatSample returns a short string representation of the first minute value.
 func formatSample(minutes []int) string {
 	if len(minutes) == 0 {
-		return "(none)"
+		return "(unknown)"
 	}
-	return fmt.Sprintf("minute %d", minutes[0])
+	parts := make([]string, len(minutes))
+	for i, m := range minutes {
+		parts[i] = fmt.Sprintf("%d", m)
+	}
+	return "minutes " + strings.Join(parts, ",")
 }
