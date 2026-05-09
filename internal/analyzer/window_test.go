@@ -77,6 +77,23 @@ func TestCheckWindows_NilScheduleSkipped(t *testing.T) {
 	}
 }
 
+func TestCheckWindows_EmptyJobList(t *testing.T) {
+	got := CheckWindows([]parser.Job{}, maintenanceWindows)
+	if len(got) != 0 {
+		t.Fatalf("expected 0 warnings for empty job list, got %d", len(got))
+	}
+}
+
+func TestCheckWindows_EmptyWindowList(t *testing.T) {
+	jobs := []parser.Job{
+		makeWindowJob("backup", "15 3 * * *"),
+	}
+	got := CheckWindows(jobs, []TimeWindow{})
+	if len(got) != 0 {
+		t.Fatalf("expected 0 warnings with no windows defined, got %d", len(got))
+	}
+}
+
 func TestFormatWindowWarnings_Empty(t *testing.T) {
 	out := FormatWindowWarnings(nil)
 	if out != "no window conflicts detected" {
