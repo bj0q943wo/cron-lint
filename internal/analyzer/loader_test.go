@@ -68,3 +68,16 @@ func TestLoadJobs_CommentsAndBlanks(t *testing.T) {
 		t.Errorf("expected 0 jobs, got %d", len(jobs))
 	}
 }
+
+func TestLoadJobs_JobNames(t *testing.T) {
+	jobs, err := analyzer.LoadJobs(strings.NewReader(validInput))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expectedNames := []string{"backup", "report", "heartbeat"}
+	for i, name := range expectedNames {
+		if jobs[i].Name != name {
+			t.Errorf("job[%d]: expected name %q, got %q", i, name, jobs[i].Name)
+		}
+	}
+}
